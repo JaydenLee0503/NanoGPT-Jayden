@@ -348,7 +348,7 @@ log_file = os.path.join(log_dir, f"log.txt")
 with open(log_file, "w") as f:
     pass
 
-
+#sampling
 for step in range(max_steps):
     t0 = time.time()
     last_step = (step == max_steps - 1)
