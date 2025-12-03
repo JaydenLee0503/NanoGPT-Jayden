@@ -1,0 +1,1 @@
+SentencePiece is an unsupervised text tokenizer and detokenizer mainly for Neural Network-based text generation systems where the vocabulary size is predetermined prior to the neural model training. It is language independent and treats the input text as a raw byte sequence, so it can be used for any language including English, Chinese, Japanese, Korean, etc.
