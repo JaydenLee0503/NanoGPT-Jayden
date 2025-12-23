@@ -47,7 +47,7 @@ with mp.Pool(nprocs) as pool:
             filename = os.path.join(DATA_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}")
             remainder = shard_size - token_count
             progress_bar.update(remainder)
-            all_tokens_np[token_count:token_count+remainder]
+            all_tokens_np[token_count:token_count+remainder] = tokens[:remainder]
             write_datafile(filename, all_tokens_np)
             shard_index += 1
             progress_bar = None

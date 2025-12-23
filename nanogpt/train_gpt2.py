@@ -25,11 +25,12 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x):
         B,T,C = x.size()
+        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head). transpose(1,2)
-        q = q.view(B, T, self.n_head, C // self.n_head). transpose(1,2)
-        v = v.view(B, T, self.n_head, C // self.n_head). transpose(1,2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1,2) #(B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1,2) #(B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1,2) #(B, nh, T, hs)
 
         #att = (q @ k.transpose(-2,-1)) * (1.0/math.sqrt(k.size(-1)))
         #att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
@@ -176,7 +177,7 @@ class GPT(nn.Module):
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).paramters
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and 'cuda' in device
         print(f"using fused AdamW: {use_fused}")
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
@@ -230,8 +231,8 @@ class DataLoaderLite:
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position: self.current_position+ B*T +1]
-        x = (buf[:-1]).view(B, T)
-        y = (buf[:-1]).view(B, T)
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
         self.current_position += B * T * self.num_processes
         if self.current_position + (B*T*self.num_processes + 1) > len(self.tokens):
             self.current_shard = (self.current_shard+1) % len(self.shards)
@@ -273,7 +274,7 @@ if ddp:
     ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
-    master_process = ddp_rank == 0
+    master_process = ddp_rank == 0 #this process will do logging, checkpointing, etc.
 else:
     ddp_rank = 0
     ddp_local_rank = 0
@@ -290,12 +291,14 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
+device_type = "cuda" if device.startswith("cuda") else "cpu"
+
 enc = tiktoken.get_encoding("gpt2")
 
 import time
 total_batch_size = 524288
-B = 32 #micro batch size (I don't think I can run 64)
-T = 2048 #sequence length
+B = 64 #micro batch size (I don't think I can run 64)
+T = 1024 #sequence length
 assert total_batch_size % (B*T * ddp_world_size) == 0
 grad_accum_steps = total_batch_size // (B*T * ddp_world_size)
 if master_process:
@@ -383,7 +386,7 @@ for step in range(max_steps):
                 }
                 torch.save(checkpoint, checkpoint_path)
                 
-    
+    #once in a while evaluate HellaSway accuracy
     if (step % 250 == 0 or last_step) and (not use_compile):
         num_correct_norm = 0
         num_total = 0
@@ -410,11 +413,11 @@ for step in range(max_steps):
             num_correct_norm = num_correct_norm.item()
         acc_norm = num_correct_norm / num_total
         if master_process:
-            print(f"HellaSway accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+            print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
             with open(log_file, "a") as f:
                 f.write(f"{step} hella {acc_norm:.4f}\n")
 
-    
+    #once in a while generate samples
     if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
         model.eval()
         num_return_sequences = 4
@@ -427,7 +430,7 @@ for step in range(max_steps):
         sample_rng.manual_seed(42+ddp_rank)
         while xgen.size(1) < max_length:
             with torch.no_grad():
-                with torch.autocast(device_type=device, dtype = torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype = torch.bfloat16):
                     logits, loss = model(xgen)
                 logits, loss = model(xgen)
                 logits = logits[:, -1, :]
@@ -435,7 +438,7 @@ for step in range(max_steps):
                 topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
                 ix = torch.multinomial(topk_probs, 1, generator=sample_rng)
                 xcol = torch.gather(topk_indices, -1, ix)
-                x = torch.cat((x, xcol), dim=1)
+                xgen = torch.cat((xgen, xcol), dim=1)
         for i in range(num_return_sequences):
             tokens = xgen[i, :max_length].tolist()
             decoded = enc.decode(tokens)
@@ -464,13 +467,14 @@ for step in range(max_steps):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     optimizer.step()
-    torch.cuda.synchronize()
+    if device_type == "cuda":
+        torch.cuda.synchronize() #waiting for all kernels to finish (for timing purposes)
     t1 = time.time()
     dt = (t1 - t0)
     tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
     tokens_per_sec = tokens_processed / dt
     if master_process:
-        print(f"step {step:d4} | loss: {loss_accum.item()} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
+        print(f"step {step:6d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
         with open(log_file, "a") as f:
             f.write(f"{step} train {loss_accum.item():.6f}\n")
 
