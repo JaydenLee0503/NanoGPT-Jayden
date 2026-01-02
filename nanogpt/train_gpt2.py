@@ -72,7 +72,7 @@ class Block(nn.Module):
     
 @dataclass
 class GPTConfig:
-    block_size: int = 1024
+    block_size: int = 2048
     vocab_size: int = 50257
     n_layer: int = 12
     n_head: int = 12
@@ -297,8 +297,8 @@ enc = tiktoken.get_encoding("gpt2")
 
 import time
 total_batch_size = 524288
-B = 64 #micro batch size (I don't think I can run 64)
-T = 1024 #sequence length
+B = 32 #micro batch size (I don't think I can run 64)
+T = 2048  #sequence length
 assert total_batch_size % (B*T * ddp_world_size) == 0
 grad_accum_steps = total_batch_size // (B*T * ddp_world_size)
 if master_process:
@@ -318,7 +318,7 @@ max_length = 30
 #model = GPT.from_pretrained('gpt2')
 #model.to(device)
 
-model = GPT(GPTConfig(vocab_size=50304))
+model = GPT(GPTConfig(vocab_size=50304, block_size=2048))
 model.to(device)
 use_compile = False
 if use_compile:
@@ -327,7 +327,7 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model
 #logits, loss = model(x, y)
-max_lr = 6e-4
+max_lr = 6e-4 
 min_lr = max_lr * 0.1
 warmup_steps = 715
 max_steps = 19073
@@ -366,7 +366,7 @@ for step in range(max_steps):
             for _ in range(val_loss_steps):
                 x, y = val_loader.next_batch()
                 x, y = x.to(device), y.to(device)
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(x, y)
                 loss = loss / val_loss_steps
                 val_loss_accum += loss.detach()
@@ -398,7 +398,7 @@ for step in range(max_steps):
             mask = mask.to(device)
 
             with torch.no_grad():
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(tokens)
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
@@ -432,7 +432,6 @@ for step in range(max_steps):
             with torch.no_grad():
                 with torch.autocast(device_type=device_type, dtype = torch.bfloat16):
                     logits, loss = model(xgen)
-                logits, loss = model(xgen)
                 logits = logits[:, -1, :]
                 probs = F.softmax(logits, dim=-1)
                 topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
@@ -451,7 +450,7 @@ for step in range(max_steps):
     for micro_step in range(grad_accum_steps):
         x,y = train_loader.next_batch()
         x,y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()

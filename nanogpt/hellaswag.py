@@ -83,6 +83,7 @@ def evaluate(model_type, device):
     torch.set_float32_matmul_precision('high')
     model = GPT2LMHeadModel.from_pretrained(model_type)
     model.to(device)
+    model.eval()
 
     num_correct_norm = 0
     num_correct = 0
@@ -94,8 +95,8 @@ def evaluate(model_type, device):
 
         logits = model(tokens).logits
         shift_logits = (logits[..., :-1, :]).contiguous()
-        shift_tokens = (tokens[..., :-1, :]).contiguous()
-        flat_shift_logits = shift_logits.view(-2, shift_logits.size(-1))
+        shift_tokens = tokens[..., 1:].contiguous()
+        flat_shift_logits = shift_logits.view(-1, shift_logits.size(-1))
         flat_shift_tokens = shift_tokens.view(-1)
         shift_losses = F.cross_entropy(flat_shift_logits, flat_shift_tokens, reduction='none')
         shift_losses = shift_losses.view(tokens.size(0), -1)
@@ -124,6 +125,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--model_type", type=str, default="gpt2", help="the model type to use")
     parser.add_argument("-d", "--device", type=str, default="cuda", help="the device type to use")
+    args = parser.parse_args()
+    evaluate(args.model_type, args.device)
 
 
 
